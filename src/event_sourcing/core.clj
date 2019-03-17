@@ -1,25 +1,37 @@
 (ns event-sourcing.core
+  #_(:gen-class)
+  
   (:import [org.apache.kafka.streams StreamsConfig KafkaStreams StreamsBuilder]
            [org.apache.kafka.streams.kstream ValueMapper Reducer]
-           [org.apache.kafka.clients.producer KafkaProducer ProducerRecord]))
+           [org.apache.kafka.clients.producer KafkaProducer ProducerRecord])
+  (:require [jackdaw.streams :as j]
+            [jackdaw.client :as jc]
+            [jackdaw.serdes.edn :as jse]))
 
 
-  #_(def xform (comp (filter (fn [[k v]] (string? v)))
-                   (map (fn [[k v]] [v k]))
-                   (filter (fn [[k v]] (= "foo" v)))))
-  
-  #_(def kstream (-> builder
-                   (stream "tset")
-                   (transduce-kstream xform)
-                   (.to "test")))
+(def app-config {"bootstrap.servers" "localhost:9093"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flights-1"
+                 StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
+                 "acks"              "all"
+                 "retries"           "0"
+                 "cache.max.bytes.buffering" "0"})
+
+
+(defn topic-config [name]
+  {:topic-name name
+   :partition-count 1
+   :replication-factor 1
+   :key-serde (jse/serde)
+   "key.serializer" (jse/serde)
+   :value-serde (jse/serde)})
+
 (defn produce-one [k v]
-  (let [producer (KafkaProducer. {"bootstrap.servers" "localhost:9093"
-                                  "acks"              "all"
-                                  "retries"           "0"
-                                  "key.serializer"    "org.apache.kafka.common.serialization.StringSerializer"
-                                  "value.serializer"  "org.apache.kafka.common.serialization.StringSerializer"})]
 
-    @(.send producer (ProducerRecord. "flight-events" k (pr-str v)))
+  (with-open [producer (jc/producer app-config (topic-config "flights"))]
+    (jc/produce! producer (topic-config "flights") {:flight k} v))
+  
+  #_(let [producer (KafkaProducer. app-config)]
+    @(.send producer (ProducerRecord. "flight-events" k v))
     (.close producer)))
 
 #_(produce-one "UA1492" {:flight "UA1492" :airline "UA" :departs (java.util.Date.)})
@@ -28,40 +40,37 @@
 
 #_(produce-one "SW9" {:flight "SW9" :airline "SW" :took-off (java.util.Date.)})
 
+(defn build-topology [builder]
+  (-> builder
+      (j/kstream (topic-config "flights"  ))
+      (j/group-by-key)
+      (j/reduce (fn [ v1 v2]
+                  (println v1 v2)
+                  (merge v1 v2))
+                (topic-config "flights"))
+      (j/to-kstream)
+      #_(.mapValues (reify ValueMapper
+                      (apply [_ v]
+                        #_(println v)
+                        (str v)))) 
+      (j/to (topic-config "flight-results")))
+  builder)
+
 (defonce s (atom nil))
 (defn main []
-  (let [builder (-> (StreamsBuilder.))
-        _  (-> builder
-               (.stream "flight-events")
-               
-               
-               (.groupByKey)
-               
-               (.reduce (reify Reducer
-                          (apply [_ v1 v2]
-                            (pr-str (merge (read-string v1) (read-string v2))))))
-               (.toStream)
-               #_(.mapValues (reify ValueMapper
-                             (apply [_ v]
-                               #_(println v)
-                               (str v)))) 
-               (.to "flight-counts"))
+  (let [topology (-> (j/streams-builder)
+                    (build-topology))
 
-        kafka-streams (KafkaStreams. (.build builder)
-                                     (StreamsConfig. {StreamsConfig/APPLICATION_ID_CONFIG    "test-app-id"
-                                                      StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
-                                                      StreamsConfig/BOOTSTRAP_SERVERS_CONFIG "localhost:9093"
-                                                      StreamsConfig/DEFAULT_KEY_SERDE_CLASS_CONFIG   org.apache.kafka.common.serialization.Serdes$StringSerde
-                                                      StreamsConfig/DEFAULT_VALUE_SERDE_CLASS_CONFIG org.apache.kafka.common.serialization.Serdes$StringSerde}))]
+        kafka-streams (j/kafka-streams topology app-config)]
     (reset! s kafka-streams)
     
 
-    (.start kafka-streams)))
+    (j/start kafka-streams)))
 
 
 (defn shutdown []
   (when @s
-    (.close @s)))
+    (j/close @s)))
   
 
 
