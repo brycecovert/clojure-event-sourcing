@@ -31,6 +31,9 @@ with Clojure
 # Kafka
 
 ---
+![Topic](https://kafka.apache.org/22/images/log_anatomy.png)
+
+---
 
 # Kafka Streams
 
@@ -63,6 +66,28 @@ with Clojure
       (j/to (topic-config "flight-results")))`}
 
 </SyntaxHighlighter>
+
+---
+
+import { Notes } from 'mdx-deck';
+
+# Best Practices
+* Determinism
+* Corrections
+* Topic hierachy
+* Transactionality
+* Event structure
+* Retention
+
+<Notes>
+* Determinism - you can't guarantee order across different partitions. Spread your keys out as much as possible, while ensuring order is respected. PartitionKey can be separate from the event's key.
+* Determinism - Turn the process off for a week. Same results as leaving it on?
+* Corrections You can't delete data. Your systems, and downstream systems need to be able to handle corrections. At least two ways - an event with the same id is a corrected event, or you can proactively void events 
+* Topic hierarchy - Observations and Decisions shouldn't be sourced from the same topic. You can't simulate. Prefer to merge the streams. 
+* Transactionality - Exactly-once delivery
+* Event structure - State of the world is a graph, changes or updates to that graph. Small event domain = customized events. Large, complex, event domain = be explicit about the graph changes for your consumers
+* Retention - Kafka by default keeps data for a certain amount of time. If you can't store all history, I recommend using compaction, will make sure that there is always at least one record per key
+</Notes>
 
 ---
 
