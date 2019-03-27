@@ -34,13 +34,13 @@
      @(jc/produce! producer (topic-config topic) k v))))
 
 #_(produce-one {:flight "UA1495"} {:event :departed
-                                   :time #inst "2019-03-17T00:00:00.000-00:00"
+                                   :time #inst "2019-03-16T00:00:00.000-00:00"
                                    :subject {:flight "UA1495"
                                              :airline "UA"
                                              :departed #inst "2019-03-17T00:00:00.000-00:00"}})
 
 #_(produce-one {:flight "UA1495"} {:event :arrived
-                                   :time #inst "2019-03-17T01:00:00.000-00:00"
+                                   :time #inst "2019-03-17T03:00:00.000-00:00"
                                    :subject {:flight "UA1495"
                                              :airline "UA"
                                              :arrived #inst "2019-03-17T01:00:00.000-00:00"}})
@@ -66,12 +66,15 @@
 
 
 (defn build-time-joining-topology [builder]
-  (let [flight-events (-> builder (j/kstream (topic-config "flights")) )
-        departures (-> flight-events (j/filter (fn [[k v] ] (= (:event v) :departed))))
-        arrivals (-> flight-events (j/filter (fn [[k v] ] (= (:event v) :arrived))))]
+  ;; let flight_events = builder.stream();
+  ;; let departures = flight_events.filter();
+  (let [flight-events (-> builder
+                          (j/kstream (topic-config "flights")) )
+        departures (-> flight-events (j/filter (fn [[k v] ]
+                                                 (= (:event v) :departed))))
+        arrivals (-> flight-events (j/filter (fn [[k v] ]
+                                               (= (:event v) :arrived))))]
     (-> departures
-        (j/peek (fn [thing] (println thing)))
-       
         (j/join-windowed arrivals
                          (fn [v1 v2]
                            (let [duration (java.time.Duration/between (.toInstant (:time v1)) (.toInstant (:time v2)))]
@@ -82,37 +85,46 @@
         (j/to (topic-config "flight-times"))))
   builder)
 
-
+(defn build-table-joining-topology [builder]
+  (let [flight-events (-> builder (j/kstream (topic-config "flights")) )
+        departures (-> flight-events
+                       (j/filter (fn [[k v] ]
+                                   (= (:event v) :departed)))
+                       (j/group-by-key)
+                       (j/reduce (fn [ v1 v2]
+                                   v2)
+                                 (topic-config "flight-departures")))
+        arrivals (-> flight-events
+                     (j/filter (fn [[k v] ]
+                                 (= (:event v) :arrived)))
+                     (j/group-by-key)
+                     (j/reduce (fn [ v1 v2]
+                                 v2)
+                               (topic-config "flight-arrivals")))]
+    (-> departures
+        (j/join arrivals
+                         (fn [v1 v2]
+                           
+                           (let [duration (java.time.Duration/between (.toInstant (:time v1)) (.toInstant (:time v2)))]
+                             {:duration (.getSeconds duration) :flight (:flight (:subject v1))})))
+        (j/to-kstream)
+        (j/to (topic-config "flight-times"))))
+  builder)
 (defonce s (atom nil))
 (defn main [topology]
   (let [topology (-> (j/streams-builder)
                     (topology))
-        
         _ (println (-> topology j/streams-builder* .build .describe .toString))
 
-        kafka-streams (j/kafka-streams topology app-config)
-        
-        ]
-    
+        kafka-streams (j/kafka-streams topology app-config)]
     (reset! s kafka-streams)
-    
-
     (j/start kafka-streams)))
 
 
 (defn shutdown []
   (when @s
     (j/close @s)))
-  
 
-(defn build-wine-example-topology [builder]
-  (let [events (-> builder (j/kstream (topic-config "warehouse-events-avro")) )]
-    (-> events
-        (j/map (fn [[k v]] [k v]))
-        (j/to (topic-config "wine-events-avro"))))
-  builder)
-
-
-#_(do (shutdown) (main build-time-joining-topology))
+#_(do (shutdown) (main build-table-joining-topology))
 
 #_(shutdown)
