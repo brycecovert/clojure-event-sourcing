@@ -9,8 +9,8 @@
             [jackdaw.serdes.edn :as jse]))
 
 
-(def app-config {"bootstrap.servers" "localhost:9093"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-timer"
+(def app-config {"bootstrap.servers" "localhost:9092"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-2"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
                  "acks"              "all"
                  "retries"           "0"
@@ -25,37 +25,37 @@
    :value-serde (jse/serde)})
 
 (defn produce-one
-  ([k v]
-   (produce-one "flights" k v)
-
-   )
   ([topic k v ]
    (with-open [producer (jc/producer app-config (topic-config topic))]
      @(jc/produce! producer (topic-config topic) k v))))
 
-#_(produce-one {:flight "UA1495"} {:event :departed
-                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                   :subject {:flight "UA1495"
-                                             :airline "UA"
-                                             :departed #inst "2019-03-17T00:00:00.000-00:00"}})
+#_(produce-one "flight-events" {:flight "UA1496"} {:event :passenger-boarded
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"})
 
-#_(produce-one {:flight "UA1495"} {:event :arrived
-                                   :time #inst "2019-03-17T03:00:00.000-00:00"
-                                   :subject {:flight "UA1495"
-                                             :airline "UA"
-                                             :arrived #inst "2019-03-17T01:00:00.000-00:00"}})
+#_(produce-one "flight-events" {:flight "UA1496"} {:event :departed
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"
+                                                   })
 
-#_(produce-one {:flight "SW9"} {:event :departed
-                                :flight {:flight "SW9" :airline "SW" :took-off (java.util.Date.)}})
+#_(produce-one "flight-events" {:flight "UA1496"} {:event :arrived
+                                                   :time #inst "2019-03-17T04:00:00.000-00:00"
+                                                   :flight "UA1496"
+                                                   })
+
+#_(produce-one "flight-events" {:flight "UA1496"} {:event :passenger-departed
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"})
+
 
 (defn build-topology [builder]
   (-> builder
-      (j/kstream (topic-config "flights"  ))
+      (j/kstream (topic-config "flight-events"  ))
       (j/group-by-key)
       (j/reduce (fn [ v1 v2]
                   (println v1 v2)
                   (merge v1 v2))
-                (topic-config "flights"))
+                (topic-config "flight-events"))
       (j/to-kstream)
       #_(.mapValues (reify ValueMapper
                       (apply [_ v]
@@ -69,7 +69,7 @@
   ;; let flight_events = builder.stream();
   ;; let departures = flight_events.filter();
   (let [flight-events (-> builder
-                          (j/kstream (topic-config "flights")) )
+                          (j/kstream (topic-config "flight-events")) )
         departures (-> flight-events (j/filter (fn [[k v] ]
                                                  (= (:event v) :departed))))
         arrivals (-> flight-events (j/filter (fn [[k v] ]
@@ -80,13 +80,13 @@
                            (let [duration (java.time.Duration/between (.toInstant (:time v1)) (.toInstant (:time v2)))]
                              {:duration (.getSeconds duration) :flight (:flight (:subject v1))}))
                          (JoinWindows/of 10000)
-                         (topic-config "flights")
-                         (topic-config "flights"))
+                         (topic-config "flight-events")
+                         (topic-config "flight-events"))
         (j/to (topic-config "flight-times"))))
   builder)
 
 (defn build-table-joining-topology [builder]
-  (let [flight-events (-> builder (j/kstream (topic-config "flights")) )
+  (let [flight-events (-> builder (j/kstream (topic-config "flight-events")) )
         departures (-> flight-events
                        (j/filter (fn [[k v] ]
                                    (= (:event v) :departed)))
@@ -110,6 +110,43 @@
         (j/to-kstream)
         (j/to (topic-config "flight-times"))))
   builder)
+
+
+(defn build-boarded-counting-topology [builder]
+  (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
+                           (j/filter (fn [[k v] ]
+                                       (= (:event v) :passenger-boarded))))]
+    (-> boarded-events
+        (j/group-by-key )
+        (j/count)
+        (j/to-kstream)
+        (j/map (fn [[k v]] [k (assoc k :passengers v)]))
+        (j/to (topic-config "decorated-flight-events"))))
+  builder)
+
+(defn build-empty-flight-emitting-topology [builder]
+  (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
+                           (j/filter (fn [[k v] ]
+                                       (#{:passenger-boarded :passenger-departed} (:event v) ))))]
+    (-> boarded-events
+        (j/group-by-key )
+        (j/aggregate (constantly {:count 0})
+                     (fn [current-count [_ event]]
+                       (println current-count)
+                       (cond-> current-count
+                         true (assoc :time (:time event))
+                         (= :passenger-boarded (:event event)) (update :count inc)
+                         (= :passenger-departed (:event event)) (update :count dec)))
+                     (topic-config "flight-count-store2"))
+        
+        (j/to-kstream)
+        (j/peek println)
+        (j/filter (fn [[k v]] (= 0 (:count v))))
+        (j/map (fn [[k v]] [k (assoc k :event :flight-ready-to-turnover
+                                     :time (:time v))]))
+        (j/to (topic-config "flight-events"))))
+  builder)
+
 (defonce s (atom nil))
 (defn main [topology]
   (let [topology (-> (j/streams-builder)
@@ -125,6 +162,6 @@
   (when @s
     (j/close @s)))
 
-#_(do (shutdown) (main build-table-joining-topology))
+#_(do (shutdown) (main build-empty-flight-emitting-topology))
 
 #_(shutdown)
