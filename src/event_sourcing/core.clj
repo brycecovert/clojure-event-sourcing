@@ -124,8 +124,10 @@
         (j/count)
         (j/to-kstream)
         (j/map (fn [[k v]] [k (assoc k :passengers v)]))
-        (j/to (topic-config "decorated-flight-events"))))
+        (j/to (topic-config "passenger-counts"))))
   builder)
+
+
 
 (defn build-empty-flight-emitting-topology [builder]
   (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
@@ -135,7 +137,6 @@
         (j/group-by-key )
         (j/aggregate (constantly {:count 0})
                      (fn [current-count [_ event]]
-                       (println current-count)
                        (cond-> current-count
                          true (assoc :time (:time event))
                          (= :passenger-boarded (:event-type event)) (update :count inc)
@@ -143,7 +144,6 @@
                      (topic-config "flight-count-store2"))
         
         (j/to-kstream)
-        (j/peek println)
         (j/filter (fn [[k v]] (= 0 (:count v))))
         (j/map (fn [[k v]] [k (assoc k :event-type :flight-ready-to-turnover
                                      :time (:time v))]))
@@ -165,6 +165,13 @@
   (when @s
     (j/close @s)))
 
+#_(do (shutdown) (main build-time-joining-topology))
+
 #_(do (shutdown) (main build-empty-flight-emitting-topology))
+
+#_(do (shutdown) (main build-boarded-counting-topology))
+
+#_(do (shutdown) (main build-empty-flight-emitting-topology))
+
 
 #_(shutdown)
