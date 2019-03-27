@@ -1,0 +1,17 @@
+{
+    "name": "presentation",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "dependencies": {
+        "react-syntax-highlighter": "^10.2.1"
+    },
+    "devDependencies": {
+        "mdx-deck": "^2.0.5"
+    },
+    "scripts": {
+        "start": "mdx-deck presentation.mdx"
+    },
+    "author": "",
+    "license": "ISC"
+}

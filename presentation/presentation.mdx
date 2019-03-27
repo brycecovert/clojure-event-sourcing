@@ -1,0 +1,40 @@
+export { default as theme } from './theme';
+import { default as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { default as github } from 'react-syntax-highlighter/dist/styles/hljs/github';
+
+# Event-sourced systems
+with Clojure
+
+---
+
+# About Me
+
+---
+
+# Events
+
+<SyntaxHighlighter language='clojure' style={github} wrapLines={true} >
+{`([{:flight "UA1432"} {:event :departed}]
+ [{:flight "UA1432"} {:event :arrived}])`}
+
+</SyntaxHighlighter>
+
+---
+
+# A simple example
+
+<SyntaxHighlighter language='clojure' style={github} wrapLines={true} >
+{`(-> builder
+      (j/kstream (topic-config "flights"  ))
+      (j/group-by-key)
+      (j/reduce (fn [ v1 v2]
+                  (merge v1 v2))
+                (topic-config "flights"))
+      (j/to-kstream)
+      (j/to (topic-config "flight-results")))`}
+
+</SyntaxHighlighter>
+
+---
+
+# The end
