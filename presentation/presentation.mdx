@@ -70,8 +70,8 @@ import { Appear } from 'mdx-deck'
 # Events
 
 <SyntaxHighlighter language='clojure' style={github} wrapLines={true} >
-{`([{:flight "UA1432"} {:event :departed}]
- [{:flight "UA1432"} {:event :arrived}])`}
+{`([{:flight "UA1432"} {:event-type :departed}]
+ [{:flight "UA1432"} {:event-type :arrived}])`}
 
 </SyntaxHighlighter>
 
@@ -118,6 +118,7 @@ import { Notes } from 'mdx-deck';
 # The end
 
 ---
-Notes:
+
+# Bryce Todo:
 + Create sample for producing and consuming only
 + Create use case for replay or simulation. Measure outcomes from better algorithm;
