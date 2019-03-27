@@ -7,12 +7,18 @@ with Clojure
 
 ---
 
+import { Appear } from 'mdx-deck'
+
 # Event-sourced systems
 ## definition
-* event - something that occurs in a certain place during a particular interval of time
-* source (verb) - to give or trace the source for
-* event-sourced system = a system that traces everything that happens, for all time 
-* event-sourced system = append-only ledger of events, materialized views
+<ul>
+<Appear>
+<li> event - something that occurs in a certain place during a particular interval of time</li>
+<li>source (verb) - to give or trace the source for</li>
+<li>event-sourced system = a system that traces everything that happens, for all time </li>
+<li>event-sourced system = append-only ledger of events, materialized views</li>
+</Appear>
+</ul>
 
 ---
 
@@ -24,13 +30,31 @@ with Clojure
 ---
 
 # How event-sourced systems?
+
 * Kafka, Kafka Streams, Jackdaw
+
+---
+
+# Prior art
+
+* Transducers?
+* RX 
+* Samza
 
 ---
 
 # Kafka
 
 ---
+
+# Kafka architecture
+
+![Topic](https://kafka.apache.org/22/images/log_anatomy.png)
+
+---
+
+# Producers / Consumers
+
 ![Topic](https://kafka.apache.org/22/images/log_anatomy.png)
 
 ---
@@ -95,4 +119,5 @@ import { Notes } from 'mdx-deck';
 
 ---
 Notes:
++ Create sample for producing and consuming only
 + Create use case for replay or simulation. Measure outcomes from better algorithm;
