@@ -3,6 +3,8 @@
   
   (:import [org.apache.kafka.streams StreamsConfig KafkaStreams StreamsBuilder]
            [org.apache.kafka.streams.kstream ValueMapper Reducer JoinWindows]
+
+           [org.apache.kafka.clients.consumer ConsumerConfig]
            [org.apache.kafka.clients.producer KafkaProducer ProducerRecord])
   (:require [jackdaw.streams :as j]
             [jackdaw.client :as jc]
@@ -10,8 +12,9 @@
 
 
 (def app-config {"bootstrap.servers" "localhost:9092"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-2"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-3"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
+                 ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "latest"
                  "acks"              "all"
                  "retries"           "0"
                  "cache.max.bytes.buffering" "0"})
@@ -29,21 +32,21 @@
    (with-open [producer (jc/producer app-config (topic-config topic))]
      @(jc/produce! producer (topic-config topic) k v))))
 
-#_(produce-one "flight-events" {:flight "UA1496"} {:event :passenger-boarded
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"})
 
-#_(produce-one "flight-events" {:flight "UA1496"} {:event :departed
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :departed
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"
                                                    })
 
-#_(produce-one "flight-events" {:flight "UA1496"} {:event :arrived
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :arrived
                                                    :time #inst "2019-03-17T04:00:00.000-00:00"
                                                    :flight "UA1496"
                                                    })
 
-#_(produce-one "flight-events" {:flight "UA1496"} {:event :passenger-departed
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-departed
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"})
 
@@ -71,9 +74,9 @@
   (let [flight-events (-> builder
                           (j/kstream (topic-config "flight-events")) )
         departures (-> flight-events (j/filter (fn [[k v] ]
-                                                 (= (:event v) :departed))))
+                                                 (= (:event-type v) :departed))))
         arrivals (-> flight-events (j/filter (fn [[k v] ]
-                                               (= (:event v) :arrived))))]
+                                               (= (:event-type v) :arrived))))]
     (-> departures
         (j/join-windowed arrivals
                          (fn [v1 v2]
@@ -89,14 +92,14 @@
   (let [flight-events (-> builder (j/kstream (topic-config "flight-events")) )
         departures (-> flight-events
                        (j/filter (fn [[k v] ]
-                                   (= (:event v) :departed)))
+                                   (= (:event-type v) :departed)))
                        (j/group-by-key)
                        (j/reduce (fn [ v1 v2]
                                    v2)
                                  (topic-config "flight-departures")))
         arrivals (-> flight-events
                      (j/filter (fn [[k v] ]
-                                 (= (:event v) :arrived)))
+                                 (= (:event-type v) :arrived)))
                      (j/group-by-key)
                      (j/reduce (fn [ v1 v2]
                                  v2)
@@ -115,7 +118,7 @@
 (defn build-boarded-counting-topology [builder]
   (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
                            (j/filter (fn [[k v] ]
-                                       (= (:event v) :passenger-boarded))))]
+                                       (= (:event-type v) :passenger-boarded))))]
     (-> boarded-events
         (j/group-by-key )
         (j/count)
@@ -127,7 +130,7 @@
 (defn build-empty-flight-emitting-topology [builder]
   (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
                            (j/filter (fn [[k v] ]
-                                       (#{:passenger-boarded :passenger-departed} (:event v) ))))]
+                                       (#{:passenger-boarded :passenger-departed} (:event-type v) ))))]
     (-> boarded-events
         (j/group-by-key )
         (j/aggregate (constantly {:count 0})
@@ -135,14 +138,14 @@
                        (println current-count)
                        (cond-> current-count
                          true (assoc :time (:time event))
-                         (= :passenger-boarded (:event event)) (update :count inc)
-                         (= :passenger-departed (:event event)) (update :count dec)))
+                         (= :passenger-boarded (:event-type event)) (update :count inc)
+                         (= :passenger-departed (:event-type event)) (update :count dec)))
                      (topic-config "flight-count-store2"))
         
         (j/to-kstream)
         (j/peek println)
         (j/filter (fn [[k v]] (= 0 (:count v))))
-        (j/map (fn [[k v]] [k (assoc k :event :flight-ready-to-turnover
+        (j/map (fn [[k v]] [k (assoc k :event-type :flight-ready-to-turnover
                                      :time (:time v))]))
         (j/to (topic-config "flight-events"))))
   builder)
