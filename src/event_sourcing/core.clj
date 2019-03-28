@@ -2,7 +2,7 @@
   #_(:gen-class)
   
   (:import [org.apache.kafka.streams StreamsConfig KafkaStreams StreamsBuilder]
-           [org.apache.kafka.streams.kstream ValueMapper Reducer JoinWindows]
+           [org.apache.kafka.streams.kstream ValueMapper Reducer JoinWindows ValueTransformer]
 
            [org.apache.kafka.clients.consumer ConsumerConfig]
            [org.apache.kafka.clients.producer KafkaProducer ProducerRecord])
@@ -12,7 +12,7 @@
 
 
 (def app-config {"bootstrap.servers" "localhost:9092"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-3"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-4"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
                  ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "latest"
                  "acks"              "all"
@@ -50,22 +50,6 @@
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"})
 
-
-(defn build-topology [builder]
-  (-> builder
-      (j/kstream (topic-config "flight-events"  ))
-      (j/group-by-key)
-      (j/reduce (fn [ v1 v2]
-                  (println v1 v2)
-                  (merge v1 v2))
-                (topic-config "flight-events"))
-      (j/to-kstream)
-      #_(.mapValues (reify ValueMapper
-                      (apply [_ v]
-                        #_(println v)
-                        (str v)))) 
-      (j/to (topic-config "flight-results")))
-  builder)
 
 
 (defn build-time-joining-topology [builder]
@@ -127,6 +111,32 @@
         (j/to (topic-config "passenger-counts"))))
   builder)
 
+(defn build-boarded-decorating-topology [builder]
+  (let [all-events (-> builder (j/kstream (topic-config "flight-events")))
+        boarded-events (-> all-events
+                           (j/filter (fn [[k v] ]
+                                       (#{:passenger-boarded :passenger-departed} (:event-type v)))))
+        passengers-ktable (-> boarded-events
+                              (j/group-by-key )
+                              (j/aggregate (constantly 0)
+                                           (fn [current-count [_ event]]
+                                             (cond-> current-count
+                                               (= :passenger-boarded (:event-type event)) inc
+                                               (= :passenger-departed (:event-type event)) dec))
+                                           (topic-config "passengers")))]
+    (-> all-events
+        (j/transform-values #(let [passenger-store (atom nil)]
+                               (reify  ValueTransformer
+                                 (init [_ pc]
+                                   (reset! passenger-store (.getStateStore pc "passengers")))
+                                 (transform [_ v]
+                                   (assoc v :passengers (.get @passenger-store {:flight (:flight v)})))
+                                 (close [_])))
+                            ["passengers"])
+        
+        (j/to (topic-config "flight-events-with-passengers")))
+    builder))
+
 
 
 (defn build-empty-flight-emitting-topology [builder]
@@ -170,6 +180,8 @@
 #_(do (shutdown) (main build-empty-flight-emitting-topology))
 
 #_(do (shutdown) (main build-boarded-counting-topology))
+
+#_(do (shutdown) (main build-boarded-decorating-topology))
 
 #_(do (shutdown) (main build-empty-flight-emitting-topology))
 
