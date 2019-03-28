@@ -138,6 +138,35 @@
     builder))
 
 
+(defn transform-with-stores [stream f store-names]
+  (j/transform-values stream #(let [stores (atom nil)]
+                                (reify  ValueTransformer
+                                  (init [_ pc]
+                                    (reset! stores (mapv (fn [s] (.getStateStore pc s)) store-names)))
+                                  (transform [_ v]
+                                    (f v @stores))
+                                  (close [_])))
+                                store-names))
+
+(defn build-boarded-decorating-topology-2 [builder]
+  (let [all-events (-> builder (j/kstream (topic-config "flight-events")))
+        boarded-events (-> all-events
+                           (j/filter (fn [[k v] ]
+                                       (#{:passenger-boarded :passenger-departed} (:event-type v)))))
+        passengers-ktable (-> boarded-events
+                              (j/group-by-key )
+                              (j/aggregate (constantly 0)
+                                           (fn [current-count [_ event]]
+                                             (cond-> current-count
+                                               (= :passenger-boarded (:event-type event)) inc
+                                               (= :passenger-departed (:event-type event)) dec))
+                                           (topic-config "passengers")))]
+    (-> all-events
+        (transform-with-stores (fn [event [passengers]]
+                                 (assoc event :passengers (.get passengers {:flight (:flight event)})))
+                               ["passengers"])
+        (j/to (topic-config "flight-events-with-passengers")))
+    builder))
 
 (defn build-empty-flight-emitting-topology [builder]
   (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
@@ -182,6 +211,8 @@
 #_(do (shutdown) (main build-boarded-counting-topology))
 
 #_(do (shutdown) (main build-boarded-decorating-topology))
+
+#_(do (shutdown) (main build-boarded-decorating-topology-2))
 
 #_(do (shutdown) (main build-empty-flight-emitting-topology))
 
