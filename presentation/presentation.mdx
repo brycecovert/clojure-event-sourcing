@@ -93,6 +93,21 @@ import { Appear } from 'mdx-deck'
 
 ---
 
+---
+
+# Three use cases we'll cover
+* Analytics (Kafka->Kafka)
+* Query (Kafka-> Persistent State)
+* Decisions (Kafka -> Side effects)
+
+<Notes>
+* Analytics = take data from a stream, derive some information from it, and send it for someone else to consume
+* Query = take data from a stream, derive information, support realtime query
+* Decisions = Do something when something happens
+</Notes>
+
+---
+
 import { Notes } from 'mdx-deck';
 
 # Best Practices
@@ -120,5 +135,7 @@ import { Notes } from 'mdx-deck';
 ---
 
 # Bryce Todo:
+
 + Create sample for producing and consuming only
 + Create use case for replay or simulation. Measure outcomes from better algorithm;
++ Create example using kstream dsl
