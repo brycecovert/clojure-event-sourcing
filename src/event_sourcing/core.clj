@@ -1,8 +1,9 @@
 (ns event-sourcing.core
   #_(:gen-class)
   
-  (:import [org.apache.kafka.streams StreamsConfig KafkaStreams StreamsBuilder]
-           [org.apache.kafka.streams.kstream ValueMapper Reducer JoinWindows]
+  (:import [org.apache.kafka.streams StreamsConfig KafkaStreams StreamsBuilder KeyValue]
+           [org.apache.kafka.streams.state QueryableStoreTypes]
+           [org.apache.kafka.streams.kstream ValueMapper Reducer JoinWindows ValueTransformer Transformer]
 
            [org.apache.kafka.clients.consumer ConsumerConfig]
            [org.apache.kafka.clients.producer KafkaProducer ProducerRecord])
@@ -11,8 +12,8 @@
             [jackdaw.serdes.edn :as jse]))
 
 
-(def app-config {"bootstrap.servers" "localhost:9092"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-3"
+(def app-config {"bootstrap.servers" "localhost:9093"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-4"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
                  ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "latest"
                  "acks"              "all"
@@ -31,42 +32,6 @@
   ([topic k v ]
    (with-open [producer (jc/producer app-config (topic-config topic))]
      @(jc/produce! producer (topic-config topic) k v))))
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"})
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :departed
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"
-                                                   })
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :arrived
-                                                   :time #inst "2019-03-17T04:00:00.000-00:00"
-                                                   :flight "UA1496"
-                                                   })
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-departed
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"})
-
-
-(defn build-topology [builder]
-  (-> builder
-      (j/kstream (topic-config "flight-events"  ))
-      (j/group-by-key)
-      (j/reduce (fn [ v1 v2]
-                  (println v1 v2)
-                  (merge v1 v2))
-                (topic-config "flight-events"))
-      (j/to-kstream)
-      #_(.mapValues (reify ValueMapper
-                      (apply [_ v]
-                        #_(println v)
-                        (str v)))) 
-      (j/to (topic-config "flight-results")))
-  builder)
-
 
 (defn build-time-joining-topology [builder]
   ;; let flight_events = builder.stream();
@@ -115,39 +80,111 @@
   builder)
 
 
+(defn flight->passenger-count-ktable [flight-events-stream]
+  (-> flight-events-stream
+      (j/filter (fn [[k v] ]
+                  (#{:passenger-boarded :passenger-departed} (:event-type v))))
+      (j/group-by-key )
+      (j/aggregate (constantly 0)
+                   (fn [current-count [_ event]]
+                     (cond-> current-count
+                       (= :passenger-boarded (:event-type event)) inc
+                       (= :passenger-departed (:event-type event)) dec))
+                   (topic-config "passengers"))))
+
 (defn build-boarded-counting-topology [builder]
-  (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
-                           (j/filter (fn [[k v] ]
-                                       (= (:event-type v) :passenger-boarded))))]
-    (-> boarded-events
-        (j/group-by-key )
-        (j/count)
+  (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))]
+    (-> flight-events-stream
+        (flight->passenger-count-ktable)
         (j/to-kstream)
-        (j/map (fn [[k v]] [k (assoc k :passengers v)]))
+        (j/map (fn [[k count]]
+                 [k (assoc k :passenger-count count)]))
         (j/to (topic-config "passenger-counts"))))
   builder)
 
+(defn build-boarded-decorating-topology [builder]
+  (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))
+        passengers-ktable (flight->passenger-count-ktable flight-events-stream)
+        passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
+    (-> flight-events-stream
+        (j/transform-values #(let [passenger-store (atom nil)]
+                               (reify  ValueTransformer
+                                 (init [_ pc]
+                                   (reset! passenger-store (.getStateStore pc passenger-store-name)))
+                                 (transform [_ v]
+                                   (assoc v :passengers (.get @passenger-store {:flight (:flight v)})))
+                                 (close [_])))
+                            [passenger-store-name])
+        (j/to (topic-config "flight-events-with-passengers")))
+    builder))
 
+(defn transform-with-stores [stream f store-names]
+  (j/transform-values stream #(let [stores (atom nil)]
+                                (reify  ValueTransformer
+                                  (init [_ pc]
+                                    (reset! stores (mapv (fn [s] (.getStateStore pc s)) store-names)))
+                                  (transform [_ v]
+                                    (f v @stores))
+                                  (close [_])))
+                                store-names))
+
+(defn build-boarded-decorating-topology-cleaner [builder]
+  (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))
+        passengers-ktable (flight->passenger-count-ktable flight-events-stream)
+        passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
+    (-> flight-events-stream
+        (transform-with-stores (fn [event [passenger-store]]
+                                 (assoc event :passengers (.get passenger-store {:flight (:flight event)})))
+                               [passenger-store-name])
+        (j/to (topic-config "flight-events-with-passengers")))
+    builder))
 
 (defn build-empty-flight-emitting-topology [builder]
-  (let [boarded-events (-> builder (j/kstream (topic-config "flight-events"))
-                           (j/filter (fn [[k v] ]
-                                       (#{:passenger-boarded :passenger-departed} (:event-type v) ))))]
-    (-> boarded-events
-        (j/group-by-key )
-        (j/aggregate (constantly {:count 0})
-                     (fn [current-count [_ event]]
-                       (cond-> current-count
-                         true (assoc :time (:time event))
-                         (= :passenger-boarded (:event-type event)) (update :count inc)
-                         (= :passenger-departed (:event-type event)) (update :count dec)))
-                     (topic-config "flight-count-store2"))
-        
-        (j/to-kstream)
-        (j/filter (fn [[k v]] (= 0 (:count v))))
-        (j/map (fn [[k v]] [k (assoc k :event-type :flight-ready-to-turnover
-                                     :time (:time v))]))
-        (j/to (topic-config "flight-events"))))
+  (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))
+        passengers-ktable (flight->passenger-count-ktable flight-events-stream)
+        passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
+    (-> flight-events-stream
+        (transform-with-stores (fn [event [passenger-store]]
+                                 (assoc event :passengers (.get passenger-store {:flight (:flight event)})))
+                               [passenger-store-name])
+        (j/filter (fn [[_ event]]
+                    (and (= 0 (:passengers event))
+                         (= :passenger-departed (:event-type event)))))
+        (j/map (fn [[k last-passenger-event]]
+                 [k (-> last-passenger-event
+                        (dissoc :passengers)
+                        (assoc :event-type :plane-empty))]))
+        (j/to (topic-config "flight-events")))
+    builder))
+
+(defn transformer-supplier [xform]
+  #(let [processor-context (atom nil)]
+     (reify  Transformer
+       (init [_ pc]
+         (reset! processor-context pc))
+       (transform [_ k v]
+         (transduce xform
+                    (fn [processor-context [k v]]
+                      (.forward processor-context k v)
+                      processor-context)
+                    @processor-context
+                    [[k v]])
+         (.commit @processor-context)
+         nil)
+       (close [_]))))
+
+(defn build-transducer-topology [builder]
+  (let [xform (comp (filter (fn [[k v]]
+                              (#{:passenger-boarded :passenger-departed} (:event-type v) )))
+                    (map (fn [[k v]]
+                           [k (assoc v :decorated? true)]))
+                    (mapcat (fn [[k v]]
+                              [[k v]
+                               [k v]])))
+        boarded-events (-> builder
+                           (j/kstream (topic-config "flight-events"))
+                           (j/transform (transformer-supplier xform))
+                           (j/to (topic-config "transduced-events")))])
   builder)
 
 (defonce s (atom nil))
@@ -165,13 +202,47 @@
   (when @s
     (j/close @s)))
 
+(defn get-passengers [flight]
+  (-> @s 
+      (.store "passengers" (QueryableStoreTypes/keyValueStore))
+      (.get {:flight flight})))
+
+#_(get-passengers "UA1496")
+
 #_(do (shutdown) (main build-time-joining-topology))
 
-#_(do (shutdown) (main build-empty-flight-emitting-topology))
 
 #_(do (shutdown) (main build-boarded-counting-topology))
 
+#_(do (shutdown) (main build-boarded-decorating-topology))
+
+#_(do (shutdown) (main build-boarded-decorating-topology-cleaner))
+
 #_(do (shutdown) (main build-empty-flight-emitting-topology))
+
+#_(do (shutdown) (main build-transducer-topology))
 
 
 #_(shutdown)
+
+
+
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"})
+
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :departed
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"
+                                                   })
+
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :arrived
+                                                   :time #inst "2019-03-17T04:00:00.000-00:00"
+                                                   :flight "UA1496"
+                                                   })
+
+#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-departed
+                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
+                                                   :flight "UA1496"})
+
+
