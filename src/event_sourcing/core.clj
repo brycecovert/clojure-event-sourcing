@@ -9,9 +9,11 @@
             [jackdaw.client :as jc]
             [event-sourcing.flight-time-analytics :as flight-time-analytics]
             [event-sourcing.passenger-counting :as passenger-counting]
+            [event-sourcing.delay-finder :as delay-finder]
             [event-sourcing.transducer :as transducer]
             [event-sourcing.utils :refer [topic-config]]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [clojure.string :as str]))
 
 
 
@@ -24,7 +26,6 @@
                  "retries"           "0"
                  "cache.max.bytes.buffering" "0"})
 
-
 (defn produce-one
   ([topic k v ]
    (with-open [producer (jc/producer app-config (topic-config topic))]
@@ -32,11 +33,11 @@
 
 (defonce stream-app (atom nil))
 (defonce continue-monitoring? (atom true))
-(defn main [topology]
-  (let [topology (-> (j/streams-builder)
-                    (topology))
-        _ (println (-> topology j/streams-builder* .build .describe .toString))
 
+(defn start-topology [topology]
+  (let [streams-builder (j/streams-builder)
+        topology (topology streams-builder)
+        _ (println (-> topology j/streams-builder* .build .describe .toString))
         kafka-streams (j/kafka-streams topology app-config)]
     (reset! stream-app kafka-streams)
     (j/start kafka-streams)))
@@ -56,9 +57,10 @@
                                                       (map topic-config topics))]
        (loop [results (jc/poll subscription 200)] 
          (doseq [{:keys [topic-name key value]} results]
-           (clojure.pprint/pprint [[:topic topic-name]
-                                   [:key key]
-                                   [:value value]]))
+           
+           (println "Topic: " topic-name "\n"
+                    "Key:" key "\n"
+                    "Value:" (str/replace (with-out-str (clojure.pprint/pprint value)) #"\n" "\n       ")))
          (if @continue-monitoring?
            (recur (jc/poll subscription 200))
            nil))))))
@@ -69,14 +71,38 @@
 
 #_(shutdown)
 
+;; Example events
+(comment
+  [{:flight "UA1496"}
+   {:event-type :passenger-boarded
+    :time #inst "2019-03-16T00:00:00.000-00:00"
+    :flight "UA1496"}]
+
+  [{:flight "UA1496"}
+   {:event-type :departed
+    :time #inst "2019-03-16T00:00:00.000-00:00"
+    :flight "UA1496"
+    :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"}]
+
+  [{:flight "UA1496"}
+   {:event-type :arrived
+    :time #inst "2019-03-17T04:00:00.000-00:00"
+    :flight "UA1496"}]
+
+  [{:flight "UA1496"}
+   {:event-type :passenger-departed
+    :time #inst "2019-03-16T00:00:00.000-00:00"
+    :flight "UA1496"}])
+
 #_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"})
 
+
 #_(produce-one "flight-events" {:flight "UA1496"} {:event-type :departed
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"
-                                                   })
+                                                   :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"})
 
 #_(produce-one "flight-events" {:flight "UA1496"} {:event-type :arrived
                                                    :time #inst "2019-03-17T04:00:00.000-00:00"
@@ -87,39 +113,103 @@
                                                    :time #inst "2019-03-16T00:00:00.000-00:00"
                                                    :flight "UA1496"})
 
-#_(do (shutdown)
-      (main flight-time-analytics/build-time-joining-topology)
-      (monitor-topics ["flight-events" "flight-times"]))
+
+;; EXAMPLE 1: Finds delayed flights from flight-events, writes to flight-status
 
 
-#_(do (shutdown)
-      (main flight-time-analytics/build-table-joining-topology)
-      (monitor-topics ["flight-events" "flight-times"]))
+(comment 
+  (do (shutdown)
+      (start-topology delay-finder/find-delays-topology)
+      (monitor-topics ["flight-events" "flight-status"]))
+
+  ;; delayed departure
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :departed
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"
+                :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"})
+
+  ;; on-time departure
+  (produce-one "flight-events"
+               {:flight "UA1497"}
+               {:event-type :departed
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1497"
+                :scheduled-departure #inst "2019-03-16T00:00:00.000-00:00"})
+  )
 
 
-#_(do (shutdown)
-      (main passenger-counting/build-boarded-counting-topology)
+
+;; EXAMPLE 2: Finds delayed flights from flight-events, writes to flight-status
+(comment 
+  (do (shutdown)
+        (start-topology flight-time-analytics/build-time-joining-topology)
+        (monitor-topics ["flight-events" "flight-times"]))
+
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :departed
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"
+                :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"})
+
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :arrived
+                :time #inst "2019-03-16T03:00:00.000-00:00"
+                :flight "UA1496"})
+
+  (do (shutdown)
+        (start-topology flight-time-analytics/build-table-joining-topology)
+        (monitor-topics ["flight-events" "flight-times"]))
+
+  (produce-one "flight-events"
+               {:flight "UA1497"}
+               {:event-type :departed
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1497"
+                :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"})
+
+  (produce-one "flight-events"
+               {:flight "UA1497"}
+               {:event-type :arrived
+                :time #inst "2019-03-16T03:00:00.000-00:00"
+                :flight "UA1497"})
+  )
+
+
+;; EXAMPLE 3: Counts passengers currently on the plane, decorates events
+(comment
+  (do (shutdown)
+      (start-topology passenger-counting/build-boarded-counting-topology)
       (monitor-topics ["flight-events" "passenger-counts"]))
 
-#_(do (shutdown)
-      (main passenger-counting/build-boarded-decorating-topology)
+  (do (shutdown)
+      (start-topology passenger-counting/build-boarded-decorating-topology)
       (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
-#_(do (shutdown)
-      (main passenger-counting/build-boarded-decorating-topology-cleaner)
+  (do (shutdown)
+      (start-topology passenger-counting/build-boarded-decorating-topology-cleaner)
       (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
-#_(do (shutdown)
-      (main passenger-counting/build-empty-flight-emitting-topology)
+  (do (shutdown)
+      (start-topology passenger-counting/build-empty-flight-emitting-topology)
       (monitor-topics ["flight-events" "flight-events"]))
 
-#_(passenger-counting/get-passengers @stream-app "UA1496")
+  (passenger-counting/get-passengers @stream-app "UA1496")
+  )
 
-#_(do (shutdown)
-      (main transducer/build-transducer-topology)
-      (monitor-topics ["flight-events" "transduced-events"]))
+;; EXAMPLE 4: Transducers
+(comment 
+  (do (shutdown)
+        (start-topology transducer/build-transducer-topology)
+        (monitor-topics ["flight-events" "transduced-events"]))
+  )
 
 
-#_(shutdown)
+(comment 
+  (shutdown)
+  )
 
 
