@@ -7,11 +7,13 @@
            [org.apache.kafka.clients.producer KafkaProducer ProducerRecord])
   (:require [jackdaw.streams :as j]
             [jackdaw.client :as jc]
-            [event-sourcing.producer :as producer]
             [event-sourcing.flight-time-analytics :as flight-time-analytics]
             [event-sourcing.passenger-counting :as passenger-counting]
             [event-sourcing.transducer :as transducer]
-            [event-sourcing.utils :refer [topic-config]]))
+            [event-sourcing.utils :refer [topic-config]]
+            [clojure.set :as set]))
+
+
 
 
 (def app-config {"bootstrap.servers" "localhost:9092"
@@ -54,10 +56,13 @@
                                                       (map topic-config topics))]
        (loop [results (jc/poll subscription 200)] 
          (doseq [{:keys [topic-name key value]} results]
-           (println (str "[" topic-name  "] " key " -> " value)))
+           (clojure.pprint/pprint [[:topic topic-name]
+                                   [:key key]
+                                   [:value value]]))
          (if @continue-monitoring?
            (recur (jc/poll subscription 200))
            nil))))))
+
 
 
 
@@ -96,15 +101,23 @@
       (main passenger-counting/build-boarded-counting-topology)
       (monitor-topics ["flight-events" "passenger-counts"]))
 
-#_(do (shutdown) (main passenger-counting/build-boarded-decorating-topology))
+#_(do (shutdown)
+      (main passenger-counting/build-boarded-decorating-topology)
+      (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
-#_(do (shutdown) (main passenger-counting/build-boarded-decorating-topology-cleaner))
+#_(do (shutdown)
+      (main passenger-counting/build-boarded-decorating-topology-cleaner)
+      (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
-#_(do (shutdown) (main passenger-counting/build-empty-flight-emitting-topology))
+#_(do (shutdown)
+      (main passenger-counting/build-empty-flight-emitting-topology)
+      (monitor-topics ["flight-events" "flight-events"]))
 
-#_(get-passengers @stream-app "UA1496")
+#_(passenger-counting/get-passengers @stream-app "UA1496")
 
-#_(do (shutdown) (main transducer/build-transducer-topology))
+#_(do (shutdown)
+      (main transducer/build-transducer-topology)
+      (monitor-topics ["flight-events" "transduced-events"]))
 
 
 #_(shutdown)

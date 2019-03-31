@@ -17,9 +17,11 @@
          (reset! processor-context pc))
        (transform [_ k v]
          (transduce xform
-                    (fn [processor-context [k v]]
-                      (.forward processor-context k v)
-                      processor-context)
+                    (fn ([processor-context [k v]]
+                       (.forward processor-context k v)
+                       processor-context)
+                      ([processor-context]
+                       processor-context))
                     @processor-context
                     [[k v]])
          (.commit @processor-context)
