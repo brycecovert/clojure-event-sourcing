@@ -1,10 +1,25 @@
-# event-sourcing
+# Event-sourced systems with Kafka, Clojure, and Jackdaw
 
-A Clojure library designed to ... well, that part is up to you.
+This repository is part of a Clojure meetup talk, walking through building event-sourced systems with Kafka. 
 
-## Usage
 
-FIXME
+
+## Slides
+
+You can walk through the slides [here](https://www.slideshare.net/BryceCovert1/eventsourced-systems-with-kafka-clojure-and-jackdaw).
+
+## Try it out
+
+You'll first want to set up kafka on your local machine.
+```
+git clone git@github.com:confluentinc/cp-docker-images.git
+cd cp-docker-images/examples/kafka-single-node
+docker-compose up -d
+```
+
+Next, fire up a REPL and walk through the commented sections in core.clj.
+
+
 
 ## License
 

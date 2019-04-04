@@ -173,6 +173,8 @@
                 :time #inst "2019-03-16T00:00:00.000-00:00"
                 :flight "UA1496"})
 
+  (query/get-passengers @stream-app "UA1496")
+
   ;; Leslie Nielsen Departed
   (produce-one "flight-events"
                {:flight "UA1496"}
