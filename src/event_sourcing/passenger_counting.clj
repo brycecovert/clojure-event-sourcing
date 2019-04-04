@@ -13,21 +13,21 @@
       (j/filter (fn [[k v] ]
                   (#{:passenger-boarded :passenger-departed} (:event-type v))))
       (j/group-by-key )
-      (j/aggregate (constantly 0)
-                   (fn [current-count [_ event]]
-                     (cond-> current-count
-                       (= :passenger-boarded (:event-type event)) inc
-                       (= :passenger-departed (:event-type event)) dec))
-                   (topic-config "passengers"))))
+      (j/aggregate (constantly #{})
+                   (fn [current-passengers [_ event]]
+                     (cond-> current-passengers
+                       (= :passenger-boarded (:event-type event)) (conj (:who event))
+                       (= :passenger-departed (:event-type event)) (disj (:who event))))
+                   (topic-config "passenger-set"))))
 
 (defn build-boarded-counting-topology [builder]
   (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))]
     (-> flight-events-stream
         (flight->passenger-count-ktable)
         (j/to-kstream)
-        (j/map (fn [[k count]]
-                 [k (assoc k :passenger-count count)]))
-        (j/to (topic-config "passenger-counts"))))
+        (j/map (fn [[k passengers]]
+                 [k (assoc k :passengers passengers)]))
+        (j/to (topic-config "passenger"))))
   builder)
 
 (defn build-boarded-decorating-topology [builder]
@@ -40,7 +40,7 @@
                                  (init [_ pc]
                                    (reset! passenger-store (.getStateStore pc passenger-store-name)))
                                  (transform [_ v]
-                                   (assoc v :passengers (.get @passenger-store {:flight (:flight v)})))
+                                   (assoc v :passenger-count (count (.get @passenger-store {:flight (:flight v)}))))
                                  (close [_])))
                             [passenger-store-name])
         (j/to (topic-config "flight-events-with-passengers")))
@@ -62,7 +62,7 @@
         passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
     (-> flight-events-stream
         (transform-with-stores (fn [event [passenger-store]]
-                                 (assoc event :passengers (.get passenger-store {:flight (:flight event)})))
+                                 (assoc event :passenger-count (count (.get passenger-store {:flight (:flight event)}))))
                                [passenger-store-name])
         (j/to (topic-config "flight-events-with-passengers")))
     builder))
@@ -73,19 +73,19 @@
         passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
     (-> flight-events-stream
         (transform-with-stores (fn [event [passenger-store]]
-                                 (assoc event :passengers (.get passenger-store {:flight (:flight event)})))
+                                 (assoc event :passengers (count (.get passenger-store {:flight (:flight event)}))))
                                [passenger-store-name])
         (j/filter (fn [[_ event]]
                     (and (= 0 (:passengers event))
                          (= :passenger-departed (:event-type event)))))
         (j/map (fn [[k last-passenger-event]]
                  [k (-> last-passenger-event
-                        (dissoc :passengers)
+                        (dissoc :passengers :who)
                         (assoc :event-type :plane-empty))]))
         (j/to (topic-config "flight-events")))
     builder))
 
 (defn get-passengers [streams flight]
   (-> streams
-      (.store "passengers" (QueryableStoreTypes/keyValueStore))
+      (.store "passenger-set" (QueryableStoreTypes/keyValueStore))
       (.get {:flight flight})))

@@ -22,3 +22,4 @@
                  [k {:status :left-on-time}])))
       (j/to (topic-config "flight-status")))
   builder)
+

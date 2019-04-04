@@ -19,7 +19,7 @@
 
 
 (def app-config {"bootstrap.servers" "localhost:9092"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-4"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-6"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
                  ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "latest"
                  "acks"              "all"
@@ -67,14 +67,13 @@
 
 
 
-
-
 #_(shutdown)
 
 ;; Example events
 (comment
   [{:flight "UA1496"}
    {:event-type :passenger-boarded
+    :who "Leslie Nielsen"
     :time #inst "2019-03-16T00:00:00.000-00:00"
     :flight "UA1496"}]
 
@@ -91,7 +90,8 @@
 
   [{:flight "UA1496"}
    {:event-type :passenger-departed
-    :time #inst "2019-03-16T00:00:00.000-00:00"
+    :who "Leslie Nielsen"
+    :time #inst "2019-03-17T05:00:00.000-00:00"
     :flight "UA1496"}])
 
 #_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
@@ -115,7 +115,6 @@
 
 
 ;; EXAMPLE 1: Finds delayed flights from flight-events, writes to flight-status
-
 
 (comment 
   (do (shutdown)
@@ -141,7 +140,7 @@
 
 
 
-;; EXAMPLE 2: Finds delayed flights from flight-events, writes to flight-status
+;; EXAMPLE 2: How long is a flight in the air?
 (comment 
   (do (shutdown)
         (start-topology flight-time-analytics/build-time-joining-topology)
@@ -179,23 +178,86 @@
   )
 
 
-;; EXAMPLE 3: Counts passengers currently on the plane, decorates events
+;; EXAMPLE 3: How many passengers are on the plane?
 (comment
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-counting-topology)
-      (monitor-topics ["flight-events" "passenger-counts"]))
+      (monitor-topics ["flight-events" "passenger"]))
+
+  ;; Leslie Nielsen boarded
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-boarded
+                :who "Leslie Nielsen"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  ;; Leslie Nielsen Departed
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-departed
+                :who "Leslie Nielsen"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  (passenger-counting/get-passengers @stream-app "UA1496")
+
 
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-decorating-topology)
       (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
+  ;; Robert Hays boarded
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-boarded
+                :who "Robert Hays"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  (passenger-counting/get-passengers @stream-app "UA1496")
+
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-decorating-topology-cleaner)
       (monitor-topics ["flight-events" "flight-events-with-passengers"]))
 
+  ;; Julie Hagerty boarded
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-boarded
+                :who "Julie Hagerty"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+
   (do (shutdown)
       (start-topology passenger-counting/build-empty-flight-emitting-topology)
-      (monitor-topics ["flight-events" "flight-events"]))
+      (monitor-topics ["flight-events"]))
+
+  ;; Leslie Nielsen Departed
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-departed
+                :who "Leslie Nielsen"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  ;; Robert Hays Departed
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-departed
+                :who "Robert Hays"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  ;; Julie Hagerty Departed
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-departed
+                :who "Julie Hagerty"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+  
 
   (passenger-counting/get-passengers @stream-app "UA1496")
   )
