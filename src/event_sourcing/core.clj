@@ -10,6 +10,8 @@
             [event-sourcing.flight-time-analytics :as flight-time-analytics]
             [event-sourcing.passenger-counting :as passenger-counting]
             [event-sourcing.delay-finder :as delay-finder]
+            [event-sourcing.decisions :as decisions]
+            [event-sourcing.query :as query]
             [event-sourcing.transducer :as transducer]
             [event-sourcing.utils :refer [topic-config]]
             [clojure.set :as set]
@@ -19,7 +21,7 @@
 
 
 (def app-config {"bootstrap.servers" "localhost:9092"
-                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-6"
+                 StreamsConfig/APPLICATION_ID_CONFIG "flight-app-8"
                  StreamsConfig/COMMIT_INTERVAL_MS_CONFIG 500
                  ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "latest"
                  "acks"              "all"
@@ -34,13 +36,16 @@
 (defonce stream-app (atom nil))
 (defonce continue-monitoring? (atom true))
 
-(defn start-topology [topology]
-  (let [streams-builder (j/streams-builder)
-        topology (topology streams-builder)
-        _ (println (-> topology j/streams-builder* .build .describe .toString))
-        kafka-streams (j/kafka-streams topology app-config)]
-    (reset! stream-app kafka-streams)
-    (j/start kafka-streams)))
+(defn start-topology
+  ([topology]
+   (start-topology topology app-config))
+  ([topology app-config]
+   (let [streams-builder (j/streams-builder)
+         topology (topology streams-builder)
+         _ (println (-> topology j/streams-builder* .build .describe .toString))
+         kafka-streams (j/kafka-streams topology app-config)]
+     (reset! stream-app kafka-streams)
+     (j/start kafka-streams))))
 
 (defn shutdown []
   (when @stream-app
@@ -55,9 +60,8 @@
    (future 
      (with-open [subscription (jc/subscribed-consumer (assoc app-config "group.id" "monitor")
                                                       (map topic-config topics))]
-       (loop [results (jc/poll subscription 200)] 
+       (loop [results (jc/poll subscription 200)]
          (doseq [{:keys [topic-name key value]} results]
-           
            (println "Topic: " topic-name "\n"
                     "Key:" key "\n"
                     "Value:" (str/replace (with-out-str (clojure.pprint/pprint value)) #"\n" "\n       ")))
@@ -65,9 +69,6 @@
            (recur (jc/poll subscription 200))
            nil))))))
 
-
-
-#_(shutdown)
 
 ;; Example events
 (comment
@@ -94,28 +95,8 @@
     :time #inst "2019-03-17T05:00:00.000-00:00"
     :flight "UA1496"}])
 
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-boarded
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"})
-
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :departed
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"
-                                                   :scheduled-departure #inst "2019-03-15T00:00:00.000-00:00"})
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :arrived
-                                                   :time #inst "2019-03-17T04:00:00.000-00:00"
-                                                   :flight "UA1496"
-                                                   })
-
-#_(produce-one "flight-events" {:flight "UA1496"} {:event-type :passenger-departed
-                                                   :time #inst "2019-03-16T00:00:00.000-00:00"
-                                                   :flight "UA1496"})
-
 
 ;; EXAMPLE 1: Finds delayed flights from flight-events, writes to flight-status
-
 (comment 
   (do (shutdown)
       (start-topology delay-finder/find-delays-topology)
@@ -178,7 +159,7 @@
   )
 
 
-;; EXAMPLE 3: How many passengers are on the plane?
+;; EXAMPLE 3: Who is on the plane?
 (comment
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-counting-topology)
@@ -200,9 +181,29 @@
                 :time #inst "2019-03-16T00:00:00.000-00:00"
                 :flight "UA1496"})
 
-  (passenger-counting/get-passengers @stream-app "UA1496")
+  
 
+  (query/get-passengers @stream-app "UA1496")
 
+  ;; Julie Hagerty boarded
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-boarded
+                :who "Julie Hagerty"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+
+  ;; Julie Hagerty departed
+  (produce-one "flight-events"
+               {:flight "UA1496"}
+               {:event-type :passenger-departed
+                :who "Julie Hagerty"
+                :time #inst "2019-03-16T00:00:00.000-00:00"
+                :flight "UA1496"})
+  )
+
+;; EXAMPLE 4: Count passengers as they board the plane
+(comment
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-decorating-topology)
       (monitor-topics ["flight-events" "flight-events-with-passengers"]))
@@ -214,8 +215,6 @@
                 :who "Robert Hays"
                 :time #inst "2019-03-16T00:00:00.000-00:00"
                 :flight "UA1496"})
-
-  (passenger-counting/get-passengers @stream-app "UA1496")
 
   (do (shutdown)
       (start-topology passenger-counting/build-boarded-decorating-topology-cleaner)
@@ -230,9 +229,24 @@
                 :flight "UA1496"})
 
 
+  (query/get-passengers @stream-app "UA1496")
+  )
+
+;; EXAMPLE 5: Are my friends on the plane?
+(comment
+
+  (query/get-passengers @stream-app "UA1496")
+  (query/friends-onboard? @stream-app "UA1496" #{"Leslie Nielsen" "Julie Hagerty" "Peter Graves"})
+  )
+
+
+
+;; EXAMPLE 6: Clean the plane when the last passenger departs
+(comment
+
   (do (shutdown)
-      (start-topology passenger-counting/build-empty-flight-emitting-topology)
-      (monitor-topics ["flight-events"]))
+      (start-topology decisions/build-clean-plane-topology)
+      (monitor-topics ["flight-events" "flight-decisions"]))
 
   ;; Leslie Nielsen Departed
   (produce-one "flight-events"
@@ -259,13 +273,26 @@
                 :flight "UA1496"})
   
 
-  (passenger-counting/get-passengers @stream-app "UA1496")
+  (query/get-passengers @stream-app "UA1496")
+
+
   )
 
-;; EXAMPLE 4: Transducers
-(comment 
+;; EXAMPLE 7: Fixing a bug
+(comment
   (do (shutdown)
-        (start-topology transducer/build-transducer-topology)
+      (start-topology decisions/build-clean-plane-topology
+                      (assoc app-config
+                             StreamsConfig/APPLICATION_ID_CONFIG "cleaning-planner-bugfix"
+                             ConsumerConfig/AUTO_OFFSET_RESET_CONFIG "earliest"
+                             ))
+      (monitor-topics ["flight-events" "flight-decisions"]))
+  )
+
+;; EXAMPLE 8: Transducers
+#_(comment 
+  (do (shutdown)
+      (start-topology transducer/build-transducer-topology)
         (monitor-topics ["flight-events" "transduced-events"]))
   )
 

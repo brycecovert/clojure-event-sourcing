@@ -67,25 +67,6 @@
         (j/to (topic-config "flight-events-with-passengers")))
     builder))
 
-(defn build-empty-flight-emitting-topology [builder]
-  (let [flight-events-stream (j/kstream builder (topic-config "flight-events"))
-        passengers-ktable (flight->passenger-count-ktable flight-events-stream)
-        passenger-store-name (.queryableStoreName (j/ktable* passengers-ktable))]
-    (-> flight-events-stream
-        (transform-with-stores (fn [event [passenger-store]]
-                                 (assoc event :passengers (count (.get passenger-store {:flight (:flight event)}))))
-                               [passenger-store-name])
-        (j/filter (fn [[_ event]]
-                    (and (= 0 (:passengers event))
-                         (= :passenger-departed (:event-type event)))))
-        (j/map (fn [[k last-passenger-event]]
-                 [k (-> last-passenger-event
-                        (dissoc :passengers :who)
-                        (assoc :event-type :plane-empty))]))
-        (j/to (topic-config "flight-events")))
-    builder))
 
-(defn get-passengers [streams flight]
-  (-> streams
-      (.store "passenger-set" (QueryableStoreTypes/keyValueStore))
-      (.get {:flight flight})))
+
+
