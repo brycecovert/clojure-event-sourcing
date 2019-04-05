@@ -154,7 +154,7 @@
   (produce-one "flight-events"
                {:flight "UA1497"}
                {:event-type :arrived
-                :time #inst "2019-03-16T03:00:00.000-00:00"
+                :time #inst "2019-03-16T04:00:00.000-00:00"
                 :flight "UA1497"})
   )
 

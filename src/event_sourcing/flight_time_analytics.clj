@@ -27,8 +27,19 @@
         (j/to (topic-config "flight-times"))))
   builder)
 
+;; if a kstream is
+;; k1 -> k1-a
+;; k2 -> k2-a
+;; k1 -> k1-b
+;; k2 -> k2-b
+;; k1 -> k1-c
+
+;; a kstream is a single value for the sequence in the stream
+;; k1 -> f(k1-a, k1-b, k1-c)
+;; k2 -> f(k2-a, k2-b)
+
 (defn build-table-joining-topology [builder]
-  (let [flight-events (-> builder (j/kstream (topic-config "flight-events")) )
+  (let [flight-events (j/kstream builder (topic-config "flight-events"))
         departures (-> flight-events
                        (j/filter (fn [[k v] ]
                                    (= (:event-type v) :departed)))
@@ -36,18 +47,15 @@
                        (j/reduce (fn [ v1 v2]
                                    v2)
                                  (topic-config "flight-departures")))
-        arrivals (-> flight-events (j/filter (fn [[k v] ]
-                                 (= (:event-type v) :arrived)))
-                     (j/group-by-key)
-                     (j/reduce (fn [ v1 v2]
-                                 v2)
-                               (topic-config "flight-arrivals")))]
-    (-> departures
-        (j/join arrivals
-                         (fn [v1 v2]
-                           
-                           (let [duration (java.time.Duration/between (.toInstant (:time v1)) (.toInstant (:time v2)))]
+        arrivals (-> flight-events
+                     (j/filter (fn [[k v] ]
+                                 (= (:event-type v) :arrived))))]
+    (-> arrivals
+        (j/left-join departures
+                         (fn [arrival departure]
+                           (let [duration (java.time.Duration/between
+                                           (.toInstant (:time departure))
+                                           (.toInstant (:time arrival)))]
                              {:duration (.getSeconds duration)})))
-        (j/to-kstream)
         (j/to (topic-config "flight-times"))))
   builder)
